@@ -8,7 +8,6 @@ import re
 import requests
 import json
 import struct
-import numpy as np
 
 os.environ['NO_PROXY'] = '172.16.1.197'
 
@@ -165,17 +164,17 @@ class ProtocolClass(object):
         pass
 
 class ProtoTriton(ProtocolClass):
-
-    def __init__(self, dict_http, dict_grpc):
+    def __init__(self, config):
         super(ProtoTriton, self).__init__()
+        self.model_name = config["model_name"]
         # setup http
-        self.dict_http = dict_http
-        self.url_http = self.dict_http["url_main"]
+        self.dict_http = config['http']
+        self.url_http = 'http://'+config['tritonclient_server'] + ':' + config['http'][
+            'port'] + '/v2/models/' + self.model_name + '/infer'
 
         # setup grpc
-        self.dict_grpc = dict_grpc
-        self.url_grpc = self.dict_grpc["url_main"]
-        self.model_name = self.dict_grpc["model_name"]
+        self.dict_grpc = config['grpc']
+        self.url_grpc = config['tritonclient_server'] + ':' + config['grpc']['port']
         self.grpc_config_options = self.dict_grpc["grpc_config_options"]
         self.signature_name = self.dict_grpc["signature_name"]
 
@@ -209,7 +208,7 @@ class ProtoTriton(ProtocolClass):
 
         # data config
         data = json.dumps({
-            'id': '',  # Optional id request
+            'id': '1',  # Optional id request
             'inputs': inputs,
             'outputs': outputs,
             'parameters':
@@ -236,7 +235,6 @@ class ProtoTriton(ProtocolClass):
             data=request_body,
             headers=headers
         )
-        print(json_response.text)
 
         if json_response.status_code == 200:
             # binary_data_size
@@ -261,11 +259,12 @@ class ProtoTriton(ProtocolClass):
             for binary_output, json_output in zip(binary_outputs, json_response['outputs']):
                 triton_types = json_output['datatype']
                 dtype = triton_to_np_dtype(triton_types)
-                data = np.frombuffer(binary_output, dtype).reshape(output.shape)
+                shape = json_output['shape']
+                data = np.frombuffer(binary_output, dtype).reshape(shape)
                 outputs.append({
                     'name' : json_output['name'],
                     'dtype': dtype,
-                    'shape': json_output['shape'],
+                    'shape': shape,
                     'data' : data
                 })
             return outputs
@@ -329,38 +328,56 @@ class ProtoTriton(ProtocolClass):
         return outputs
 
 
-# http/grpc settings
-dict_http= {
-    'url_main': 'http://172.16.1.197:30000/v2/models/face_detection/infer'
-}
-dict_grpc= {
-    'url_main': '172.16.1.197:30001',
-    'model_name': 'face_detection',
-    'grpc_config_options': None,
-    'signature_name': None
+
+
+
+
+
+
+#================ test =======================
+
+proto_config = {
+    'model_name': 'imagenet_mobilenetv3',
+    'tritonclient_server':'172.16.1.197',
+    'http': {
+        'port':'30000',
+    },
+    'grpc': {
+        'port': '30001',
+        'grpc_config_options': None,
+        'signature_name': None
+    }
 }
 
-p = ProtoTriton(dict_http, dict_grpc)
+p = ProtoTriton(proto_config)
 
-# sample data
-input = np.arange(start=0, stop=260 * 260 * 3, dtype=np.float32).reshape((1, 260, 260, 3))
+
+import numpy as np
+import PIL.Image
+
+a = PIL.Image.open(r'C:\Users\hien-dv\Downloads\Bengal_tiger_(Panthera_tigris_tigris)_female_3_crop.jpg')
+a = np.array(a.resize((224,224), resample=0), dtype=np.float32)
+a = a/255.
+a = a.reshape((-1,224,224,3))
+# print(a)
 
 # request
 request_config = {
     'inputs':
     [
         {
-            'name': 'input_face_masked',
-            'data': input
+            'name': 'inputs',
+            'data': a
         }
     ],
     'outputs':
     [
-        {'name': 'model_2'},
-        {'name': 'model_2_1'},
+        {'name': 'logits'},
     ]
 }
+
 q = p.grpc_send_request(request_config)
+# q = p.http_send_request(request_config)
 # response
 # [
 #     {
@@ -370,4 +387,11 @@ q = p.grpc_send_request(request_config)
 #         'data': np.array()
 #     },...
 # ]
+
+
 print(q)
+
+import tensorflow as tf
+probabilities = tf.nn.softmax(q[0]['data']).numpy()
+top_5 = tf.argsort(probabilities, axis=-1, direction="DESCENDING")[0][:5].numpy()
+print(top_5)
